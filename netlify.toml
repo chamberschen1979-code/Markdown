@@ -2,3 +2,8 @@
   command = "pip install -r requirements.txt"
   publish = "."
   base = ""
+
+[[redirects]]
+  from = "/*"
+  to = "/.netlify/functions/streamlit"
+  status = 200
