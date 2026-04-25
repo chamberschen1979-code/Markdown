@@ -1,0 +1,12 @@
+{
+  "buildCommand": "pip install -r requirements.txt",
+  "devCommand": "streamlit run streamlit_app.py",
+  "installCommand": "pip install -r requirements.txt",
+  "outputDirectory": ".",
+  "framework": null,
+  "functions": {
+    "api/**/*.py": {
+      "runtime": "python3.9"
+    }
+  }
+}
