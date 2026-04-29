@@ -453,8 +453,8 @@ elif current_tab == tab_options[2]:
         # 解析 Markdown 标题
         import re
         
-        # 提取所有标题及其层级
-        title_pattern = re.compile(r'^(#{1,6})\s+(.*)$', re.MULTILINE)
+        # 提取所有标题及其层级（兼容 # 和标题之间有无空格的情况）
+        title_pattern = re.compile(r'^(#{1,6})\s*(.*)$', re.MULTILINE)
         titles = []
         lines = md_text.split('\n')
         for i, line in enumerate(lines):
@@ -464,13 +464,42 @@ elif current_tab == tab_options[2]:
                 content = match.group(2).strip()
                 titles.append({"level": level, "content": content, "line": i})
         
-        # 构建文档树
+        # 过滤文件名非法字符并清洗前缀（提前定义，供 build_tree 使用）
+        def sanitize_filename(filename):
+            import re
+            patterns = [
+                r'^第[一二三四五六七八九十百]+[章节][\s、]+',
+                r'^[一二三四五六七八九十百]+[、\.．]+\s*',
+                r'^[（\(][一二三四五六七八九十百]+[）\)]\s*',
+                r'^\d+[\.．]\s*'
+            ]
+            for pattern in patterns:
+                filename = re.sub(pattern, '', filename)
+            illegal_chars = '\\/:*?"<>|'
+            for char in illegal_chars:
+                filename = filename.replace(char, "")
+            filename = filename.lstrip("# ")
+            return filename.strip()
+        
+        # 构建文档树，每个节点记录 parent_path
         def build_tree(titles):
             tree = []
             stack = []
             for title in titles:
+                # 先清理栈（移除级别 >= 当前级别的节点）
                 while stack and stack[-1]["level"] >= title["level"]:
                     stack.pop()
+                
+                # 再计算当前节点的祖先路径（此时栈中只有级别 < 当前级别的真正祖先）
+                parent_path = []
+                for node in stack:
+                    cleaned_title = sanitize_filename(node["content"])
+                    parent_path.append(cleaned_title)
+                
+                # 添加 parent_path 到当前节点
+                title["parent_path"] = parent_path
+                
+                # 将当前节点添加到树和栈中
                 if stack:
                     if "children" not in stack[-1]:
                         stack[-1]["children"] = []
@@ -550,39 +579,24 @@ elif current_tab == tab_options[2]:
             for node in doc_tree:
                 checked_titles.extend(collect_checked_titles(node))
             
-            # 过滤文件名非法字符并清洗前缀
-            def sanitize_filename(filename):
-                import re
-                # 清洗前缀：移除中文数字序号、带括号的序号、第 X 节及其跟随的标点和空格
-                # 匹配模式：
-                # 1. 第X节格式：如"第一节"
-                # 2. 中文数字加顿号：如"一、"
-                # 3. 带括号的中文数字：如"（一）"
-                # 4. 阿拉伯数字加点：如"1."
-                patterns = [
-                    r'^第[一二三四五六七八九十百]+[章节][\s、]+',  # 第X节
-                    r'^[一二三四五六七八九十百]+[、\.．]+\s*',  # 中文数字加顿号/点
-                    r'^[（\(][一二三四五六七八九十百]+[）\)]\s*',  # 带括号的中文数字
-                    r'^\d+[\.．]\s*'  # 阿拉伯数字加点
-                ]
-                
-                for pattern in patterns:
-                    filename = re.sub(pattern, '', filename)
-                
-                # 过滤非法字符
-                illegal_chars = '\\/:*?"<>|'
-                for char in illegal_chars:
-                    filename = filename.replace(char, "")
-                # 去除开头的 # 号
-                filename = filename.lstrip("# ")
-                return filename.strip()
-            
             # 显示文件列表
             if checked_titles:
                 for title in checked_titles:
-                    sanitized_name = sanitize_filename(title["content"])
-                    display_name = f"{parent_dir}-{sanitized_name}.md" if parent_dir else f"{sanitized_name}.md"
+                    # 动态拼接文件名：母目录-祖先1-祖先2-当前标题
+                    filename_parts = [parent_dir] + title["parent_path"] + [sanitize_filename(title["content"])]
+                    display_name = "-".join([p for p in filename_parts if p]) + ".md"
+                    # 截断过长的文件名
+                    if len(display_name) > 100:
+                        display_name = display_name[:97] + "..." + ".md"
                     st.write(f"- {display_name}")
+                    
+                    # 如果有子节点，显示前言文件
+                    if "children" in title and title["children"]:
+                        preface_parts = [parent_dir] + title["parent_path"] + [sanitize_filename(title["content"]), "00_前言总则"]
+                        preface_name = "-".join([p for p in preface_parts if p]) + ".md"
+                        if len(preface_name) > 100:
+                            preface_name = preface_name[:97] + "..." + ".md"
+                        st.write(f"  └─ {preface_name}")
             else:
                 st.info("请在左侧勾选要切片的标题")
         
@@ -604,6 +618,9 @@ elif current_tab == tab_options[2]:
                         zip_buffer = io.BytesIO()
                         
                         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                            # 存储所有生成的文件名用于路由
+                            generated_files = []
+                            
                             # 生成每个切片文件
                             for title in checked_titles:
                                 # 找到标题的起始和结束位置
@@ -616,26 +633,33 @@ elif current_tab == tab_options[2]:
                                         end_line = i
                                         break
                                 
-                                # 截取文本块
+                                # 截取文本块（从标题开始）
                                 text_block = "\n".join(lines[start_line:end_line])
                                 
-                                # 注入 YAML 元数据
-                                yaml_metadata = f"---\n归属母目录: [[{parent_dir}]]\n---\n\n"
+                                # 生成动态 YAML 元数据
+                                yaml_metadata = f"---\n归属母目录: [[{parent_dir}]]\n"
+                                if title["parent_path"]:
+                                    yaml_metadata += "层级路径:\n"
+                                    for ancestor in title["parent_path"]:
+                                        yaml_metadata += f"  - [[{ancestor}]]\n"
+                                yaml_metadata += "---\n\n"
                                 final_content = yaml_metadata + text_block
                                 
-                                # 生成文件名：母目录名字+切片的名字
-                                sanitized_title = sanitize_filename(title["content"])
-                                filename = f"{parent_dir}-{sanitized_title}.md"
+                                # 生成动态文件名：母目录-祖先1-祖先2-当前标题
+                                filename_parts = [parent_dir] + title["parent_path"] + [sanitize_filename(title["content"])]
+                                filename = "-".join(filename_parts) + ".md"
+                                # 截断过长的文件名
+                                if len(filename) > 150:
+                                    filename = filename[:147] + "..." + ".md"
                                 
                                 # 写入 ZIP 文件
                                 zipf.writestr(filename, final_content.encode("utf-8"))
+                                generated_files.append(filename[:-3])  # 移除 .md
                             
                             # 生成总路由文件
                             route_content = "# 总路由\n\n"
-                            for title in checked_titles:
-                                sanitized_title = sanitize_filename(title["content"])
-                                route_filename = f"{parent_dir}-{sanitized_title}"
-                                route_content += f"- [[{route_filename}]]\n"
+                            for file_name in generated_files:
+                                route_content += f"- [[{file_name}]]\n"
                             
                             zipf.writestr("00_总路由.md", route_content.encode("utf-8"))
                         
