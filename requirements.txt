@@ -1,5 +1,5 @@
 streamlit
-PyMuPDF
-python-docx
-python-pptx
-openai
+markitdown
+pillow
+pytesseract
+pdf2image
