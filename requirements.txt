@@ -1,5 +1,5 @@
 streamlit
-markitdown
+markitdown[all]
 pillow
 pytesseract
 pdf2image
